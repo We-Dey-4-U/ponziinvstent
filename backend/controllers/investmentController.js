@@ -116,7 +116,7 @@ exports.makeInvestment = async (req, res) => {
             }
         }
 
-        const referralCommission = calculateReferralCommission(investmentAmount, user.referrer);
+        const referralCommission = calculateReferralCommission(investmentAmount, user.mobileNumber);
 
         const totalReturn = calculateTotalReturn(investmentAmount, durationInDays);
         const dailyReturn = calculateDailyReturn(investmentAmount, durationInDays);
@@ -124,6 +124,8 @@ exports.makeInvestment = async (req, res) => {
         // Update user's wallet balance
         user.walletBalance -= investmentAmount;
         await user.save();
+
+         
 
         const investment = new Investment({
             user: user._id,
@@ -141,12 +143,67 @@ exports.makeInvestment = async (req, res) => {
 
         await investment.save();
 
+        // Distribute referral commissions
+        await distributeReferralCommissions(user.mobileNumber, referralCommission);
+
+
+        // Calculate total referral commission earned by the referrer
+        const referrer = await User.findOne({ mobileNumber: user.referredBy });
+        if (referrer) {
+            const totalReferralCommission = referralCommission.directReferralCommission + referralCommission.indirectReferralCommission;
+            referrer.walletBalance += totalReferralCommission;
+            await referrer.save();
+        }
+
         return res.status(201).json({ message: 'Investment created successfully' });
     } catch (error) {
         console.error(error);
         return res.status(500).json({ message: 'Server error' });
     }
 };
+
+
+
+
+
+// Function to distribute referral commissions
+// Function to distribute referral commissions
+async function distributeReferralCommissions(referrerMobileNumber, referralCommission) {
+    try {
+        // Find the direct referee (immediate referral)
+        const directReferee = await User.findOne({ referredBy: referrerMobileNumber });
+
+        if (directReferee) {
+            // Add direct referral commission to the direct referee's wallet balance
+            directReferee.walletBalance += referralCommission.directReferralCommission;
+            await directReferee.save();
+
+            // Find the indirect referee (referral of the direct referee)
+            const indirectReferee = await User.findOne({ referredBy: directReferee.mobileNumber });
+
+            if (indirectReferee) {
+                // Add indirect referral commission to the indirect referee's wallet balance
+                indirectReferee.walletBalance += referralCommission.indirectReferralCommission;
+                await indirectReferee.save();
+            }
+        } else {
+            // If there's no direct referee, just distribute to the admin
+            const adminUser = await User.findOne({ isAdmin: true });
+
+            if (adminUser) {
+                // Add admin commission to the admin user's wallet balance
+                adminUser.walletBalance += referralCommission.adminCommission;
+                await adminUser.save();
+            }
+        }
+    } catch (error) {
+        console.error('Error distributing referral commissions:', error);
+    }
+}
+
+
+
+
 
 // Function to top up the wallet
 exports.topUpWallet = async (req, res) => {
@@ -165,6 +222,8 @@ exports.topUpWallet = async (req, res) => {
         }
 
         const currentEarnings = calculateEarnings(investment);
+        const referralCommission = calculateReferralCommission(investment.amount, user.mobileNumber); // Calculate referral commission again
+
         const result = await performTopUp(investment, amount);
 
         if (result.success) {
@@ -173,6 +232,14 @@ exports.topUpWallet = async (req, res) => {
             // Update user's wallet balance
             user.walletBalance += amount;
             await user.save();
+
+             // Recalculate referral commission earnings for the referrer
+             const referrer = await User.findOne({ mobileNumber: user.referredBy });
+             if (referrer) {
+                 const totalReferralCommission = referralCommission.directReferralCommission + referralCommission.indirectReferralCommission;
+                 referrer.walletBalance += totalReferralCommission;
+                 await referrer.save();
+             }
             
             return res.status(200).json({ 
                 message: 'Wallet topped up successfully', 
